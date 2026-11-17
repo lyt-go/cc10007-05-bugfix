@@ -77,3 +77,53 @@ npm run dev
 
 领域：数据工程
 子方向：数据分析与数据应用
+
+## RFM分层 × 流失预警：状态与引用传播
+
+两个模块共享“状态 → 名单”的引用关系，规则在 `backend/app/services/rfm.py`，
+模型在 `backend/app/services/churn.py`，名单生成与状态传播在
+`backend/app/services/churn_list.py`，诊断/修复/复核在
+`backend/app/services/churn_repair.py`。
+
+### 状态机
+
+- RFM分层：`草稿 → 规则评审中 → 已启用 → 已停用`，只能前进一步；
+  `启用规则` 还要求评审结论为“通过”。
+- 流失预警：`草稿 → 训练中 → 已部署 → 已下线`，只能前进一步；
+  `部署模型` 还要求训练结论为“已完成”。
+
+跳级、回退、版本过期都会被拒绝，回执记为“已拦截”并给出原因，业务行不落库。
+
+### 名单与引用传播
+
+- 当前名单只由“有效规则 + 有效模型”共同生成：有效 = `已启用/已部署` 且
+  生效标记为真，按生效时间取最新一条。失效规则只保留历史名单。
+- 用户分层记录必须按数据快照从 `rfm_users` 读取（故障边界
+  `FB-RFM-CHURN-01`），不使用业务行上的缓存层级。
+- 规则启用/停用、模型部署/下线与名单批次在同一事务里提交；名单写入失败时
+  两侧状态一起回滚。
+- 同一批次只保留一份“当前”数据集，旧版本自动转历史；历史名单保持原预警
+  时点，不参与重算。
+- 同一批次上的两份回执并发提交时只有一方生效，另一方得到明确冲突说明。
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/rfm/{id}/actions` | 提交规则评审/启用/停用 |
+| POST | `/api/rfm/{id}/review` | 评审系统回写评审结论 |
+| GET | `/api/rfm/result-check/{id}` | RFM-0003 结果回查：调用链与依赖断点 |
+| GET | `/api/rfm/users/{snapshot_id}` | 按数据快照读取用户分层记录 |
+| POST | `/api/churn/{id}/actions` | 发起训练/部署/下线 |
+| POST | `/api/churn/{id}/training` | 训练系统回写训练结论与准确率 |
+| GET | `/api/churn/current-list` | 当前流失去向名单（唯一一份） |
+| GET | `/api/churn/reconcile` | 诊断依赖断点与两侧状态 |
+| POST | `/api/churn/repair` | 生成修复后的名单明细数据集 |
+| GET | `/api/churn/datasets/{dataset_id}` | 数据集明细 + 按来源版本材料复核 |
+| GET | `/api/churn/batches` | 当前/历史名单批次 |
+| GET | `/api/churn/receipts` · `/receipts` | 回执台账（含重复提交标记） |
+| GET | `/api/churn/audit` | 审计日志与核验码 |
+
+动作接口支持两种并发控制：`expected_version`（读取时看到的 `version`）与
+`receipt_key`（幂等键，重复提交返回原回执）。动作接口的响应里带
+`receipt.核验码`，可作为本次受理的复核凭据。

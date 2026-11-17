@@ -19,13 +19,20 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    receipt: dict[str, Any] | None = None
 
 
 class EntryPayload(BaseModel):
-    """登记或修改一条业务记录时提交的字段集合。"""
+    """登记或修改一条业务记录时提交的字段集合。
+
+    ``expected_version`` 是并发提交的乐观锁：带上读取时看到的版本号，只有版本
+    仍然一致的回执才会生效；``receipt_key`` 用于重复提交幂等。
+    """
 
     values: dict[str, Any] = Field(default_factory=dict)
     remark: str | None = None
+    expected_version: int | None = None
+    receipt_key: str | None = None
 
 
 
